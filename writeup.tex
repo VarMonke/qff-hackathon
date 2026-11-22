@@ -1,0 +1,363 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\newcommand{\ket}[1]{\lvert #1 \rangle}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Exp}{\mathbb{E}}
+
+\theoremstyle{plain}
+\newtheorem{fact}{Key fact}
+\theoremstyle{definition}
+\newtheorem*{defn}{Definition}
+
+\title{\textbf{Breaking the Silent Group}\\ \large quantum preliminaries, the task, and how the solver works}
+\author{Raiden Shor-gun --- QFF Hackathon, Track 2}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{The problem in one paragraph}
+
+A sealed quantum device holds one element of a finite abelian group $G$
+($|G| \le 2^{60}$, structure unknown) in a register we can never look at.
+The only operation is a controlled multiplication: hand the device a
+control qubit and an instruction ``multiply by $h^k$'' and, conditioned on
+the control being $\ket{1}$, it applies $U_{h^k}$ to its register.
+Three parties run a Diffie--Hellman-style exchange over this group:
+public broadcasts $g, A=g^a, B=g^b, C=g^c$, shared key $K=g^{abc}$.
+Given $(g,A,B,C)$ we must report
+\[
+  \mathrm{order} = \operatorname{ord}(g), \qquad
+  \mathrm{secret} = abc \bmod \operatorname{ord}(g),
+\]
+or \texttt{"none"} if any broadcast is \emph{forged} --- an element that is
+not a power of $g$ at all. Every oracle call is billed
+$\max(1,\operatorname{bitlength}(k))$ \emph{queries} from an 80{,}000-query
+budget, and every call adds Gaussian phase noise of standard deviation
+$\sigma\sqrt{\mathrm{cost}}$ turns, $\sigma = 0.002$.
+
+Classically this is order finding plus three discrete logs --- the exact
+pair of problems Shor's algorithm solves. The twist is that the group is
+a black box: the only thing the hardware ever reveals is \emph{phase}.
+
+\section{Quantum preliminaries (the only part we need)}
+
+\subsection{Qubits, phases, and interference}
+
+A qubit is a unit vector $\alpha\ket{0}+\beta\ket{1}$; measuring returns a
+bit with probabilities $|\alpha|^2, |\beta|^2$. The two gates we use are
+\[
+  H = \tfrac{1}{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix},
+  \qquad
+  P(\theta) = \begin{pmatrix}1&0\\0&e^{i\theta}\end{pmatrix}.
+\]
+$H$ creates the uniform superposition $\ket{+}=(\ket0+\ket1)/\sqrt2$.
+A phase on the $\ket1$ branch is invisible by itself, but a second $H$
+lets it interfere:
+\[
+  H\,P(2\pi\theta)\,H\ket0
+  = \tfrac{1+e^{2\pi i\theta}}{2}\ket0 + \tfrac{1-e^{2\pi i\theta}}{2}\ket1,
+  \qquad \Pr[1] = \sin^2(\pi\theta).
+\]
+So $H$--phase--$H$--measure is a \emph{phase detector}: it reads out
+$\theta$ with bias $\sin^2(\pi\theta)$, deterministically when
+$\theta\in\{0,\tfrac12\}$.
+
+\subsection{Phase kickback}
+
+If $U\ket{u}=e^{i\theta}\ket{u}$ (i.e.\ $\ket{u}$ is an eigenvector), then
+applying controlled-$U$ to $\ket{+}\ket{u}$ gives
+\[
+  \frac{\ket0 + e^{i\theta}\ket1}{\sqrt2}\otimes\ket{u}.
+\]
+The target register is \emph{unchanged}; the eigenphase moves onto the
+control's $\ket1$ branch. This is phase kickback, and it is the entire
+mechanism by which we read the device: our one qubit acts as the control,
+the group register is the eigenvector, and $\theta$ carries information
+about $h$.
+
+\subsection{Characters of a finite abelian group}
+
+A \emph{character} is a homomorphism $\chi : G \to \R/\Z$, i.e.\
+$\chi(xy)=\chi(x)+\chi(y) \pmod 1$. For $G=\Z_{d_1}\times\cdots\times\Z_{d_m}$
+they are exactly
+\[
+  \chi_c(h) = \sum_i \frac{c_i h_i}{d_i} \pmod 1, \qquad c\in G,
+\]
+so $G$ has $|G|$ characters, indexed by $G$ itself. Two consequences run
+the whole algorithm:
+
+\begin{itemize}[nosep]
+  \item On the cyclic subgroup $\langle g\rangle$ of order $n$,
+        every character has $\chi(g)=j/n$ for some
+        $j\in\{0,\dots,n-1\}$. \textbf{The denominator of $\chi(g)$ is the
+        order we are asked for.}
+  \item $\chi$ is a homomorphism, so $\chi(g^a)=a\,\chi(g)$. Within one
+        shot the same $\chi$ applies to every element, hence
+        $\chi(A)=a j/n$: \textbf{the secret exponents appear as linear
+        congruences between measured phases.}
+\end{itemize}
+
+\subsection{Why the device is a ``random character generator''}
+
+All multiplications $U_h$ commute ($G$ abelian), so they share an
+eigenbasis: one eigenvector $\ket{\hat\chi}$ per character, with
+$U_h\ket{\hat\chi} = e^{2\pi i\,\chi(h)}\ket{\hat\chi}$.
+The register starts in the identity state, which in this basis is the
+uniform superposition
+\[
+  \ket{e} = \frac{1}{\sqrt{|G|}}\sum_\chi \ket{\hat\chi}.
+\]
+
+\begin{fact}
+The register is never measured, so the $\chi$-branches never interfere.
+Each shot of a circuit therefore behaves \emph{exactly} as if
+(i)~a character $\chi$ is drawn uniformly at random, fixed for the whole
+shot, and (ii)~each \texttt{oracle\_gate(h,k)} is a phase gate
+$P\!\big(2\pi k\,\chi(h)\big)$ on our qubit.
+\end{fact}
+
+This is not an approximation --- the simulator literally does this
+(sampling $\chi$ per shot and multiplying the $\ket1$ amplitude by the
+phase), and it is exact at any group size. The ``quantum computer'' in
+this task is a device that turns black-box group multiplication into
+random, mutually consistent phase samples. Everything after this point is
+signal processing and number theory.
+
+\section{Reading a phase with one qubit}
+
+\subsection{Iterative phase estimation = semiclassical QFT}
+
+An oracle call \texttt{oracle\_gate(h,}$2^k$\texttt{)} implements
+$P(2\pi\cdot 2^k\chi(h))$. Write the unknown phase in binary,
+$\chi(h)=0.b_1b_2b_3\dots$; then
+\[
+  2^k\chi(h) \bmod 1 = 0.b_{k+1}b_{k+2}\dots
+\]
+--- each power left-shifts the binary point past the bits already read.
+We therefore read bits from the bottom up: power $2^{m-1}$ isolates
+$0.b_m$ (clean measurement), and before reading bit $b_k$ we \emph{undo}
+the contribution of the lower bits we already measured,
+\[
+  \text{if bit } b_{k+l}=1:\quad P\!\big(-2\pi/2^{l+1}\big),
+\]
+implemented with mid-circuit measurement, \texttt{reset}, and
+\texttt{if\_test}. This is the inverse quantum Fourier transform with its
+controlled rotations replaced by classical feed-forward
+(Griffiths--Niu semiclassical QFT). The register is never touched.
+
+Two consequences:
+
+\begin{itemize}[nosep]
+  \item \textbf{Every circuit uses 1 qubit --- the minimum possible.}
+        A control channel is unavoidable, so 0 is impossible and
+        1 suffices.
+  \item \textbf{Cost.} Step $k$ uses power $2^k$, billed $k+1$ queries,
+        so an $m$-bit estimate costs
+        $C(m)=\sum_{k=0}^{m-1}(k+1)=m(m+1)/2$ queries --- quadratic in
+        precision, and optimal: one measurement yields at most one bit,
+        and resolving scale $2^{-k}$ requires a power $\ge 2^{k-1}$.
+\end{itemize}
+
+\subsection{Noise}
+
+Each oracle call adds an independent Gaussian error
+$\varepsilon\sim\mathcal N(0,\sigma^2\cdot\mathrm{cost})$ \emph{turns} to
+the kicked phase. At the step using power $2^k$ the phase detector is
+binary, so the bit flips with probability
+\[
+  q_k = \Exp\!\left[\sin^2(\pi\varepsilon)\right]
+      = \frac{1-e^{-2\pi^2\sigma^2(k+1)}}{2}
+      \approx \pi^2\sigma^2(k+1).
+\]
+The expensive steps are the noisy steps. A flipped bit at weight $2^p$
+shifts the estimate by exactly $\pm 2^p$ LSBs, so \textbf{list decoding}
+--- try undoing each single $\pm 2^p$ shift and re-fit --- recovers most
+corrupted shots. At competition noise a 132-bit shot has
+$\lambda=\sum q_k\approx 0.32$: 72\% arrive clean, $\sim$96\% are usable
+after decoding one flip.
+
+\section{The algorithms}
+
+\subsection{Identity testing: the workhorse}
+
+To test whether $t=\prod h_i^{k_i}$ is the identity, run
+$H$, $\prod$\texttt{oracle\_gate}$(h_i,k_i)$, $H$, measure. Then
+$\Pr[1]=\sin^2(\pi\chi(t))$, and:
+
+\begin{itemize}[nosep]
+  \item $t=e$: $\chi(t)=0$ for every $\chi$ $\Rightarrow$ \emph{always} 0.
+  \item $t\ne e$ of order $s$: $\chi(t)$ is uniform over
+        $\{0,1/s,\dots,(s-1)/s\}$ $\Rightarrow$ $\Pr[1]=\tfrac12$
+        \emph{exactly}, independently of everything else.
+\end{itemize}
+
+So the test is a perfect unbiased coin \emph{unless} $t=e$. Sixteen
+consecutive zeros accept with false-accept probability $\approx2^{-16}$;
+three ones reject. Every verification in the solver --- order
+confirmation, log verification, forgery proofs, relation certification
+--- reduces to this $\chi$-independent test.
+
+\subsection{Stage 1: the order of $g$}
+
+Estimate $\chi(g)\approx M/2^m$ to $m=2\cdot\mathrm{bound}+12$ bits. The
+true value is $j/n$ with $n\le 2^{60}$, so we take the \emph{simplest
+fraction in the $\pm8$-LSB window} (Stern--Brocot descent): the
+lowest-denominator fraction near the estimate, whose denominator is the
+candidate order. The window is so narrow that valid fractions cover only
+$\sim$0.1\% of $[0,1)$ --- a corrupted shot almost never fakes a fit, and
+a real one always has $j/n$ waiting inside it. Every candidate is then
+confirmed by testing $g^c\stackrel?=e$.
+
+Two refinements matter for cost:
+
+\begin{itemize}[nosep]
+  \item \textbf{Probe shot.} Sizing every shot for the worst case
+        ($n\approx2^{60}$, 132 bits, 8.8k queries) wastes 93\% of the
+        budget when $n$ is small. We first shoot 84 bits, which covers
+        $n\le2^{36}$ for 3.6k queries.
+  \item \textbf{Lattice reuse.} If the probe fails we shoot 116 bits.
+        Neither shot alone covers $n\le2^{60}$, but the two estimates
+        $e_1/2^{m_1}, e_2/2^{m_2}$ share denominator $n$ --- recovering it
+        is simultaneous Diophantine approximation: find small $q$ with
+        both $q e_i/2^{m_i}$ within $8q$ of integers, i.e.\ a short
+        vector of the lattice spanned by
+        $(8,e_1,e_2)$, $(0,2^{m_1},0)$, $(0,0,2^{m_2})$.
+        A 3-dimensional LLL reduction finds it. The failed probe is not
+        wasted, and the answer is still confirmed by $g^n=e$, so the
+        lattice makes us cheaper, never riskier.
+\end{itemize}
+
+If a confirmed $c$ is a multiple of $\operatorname{ord}(g)$, the excess
+factors divide $\gcd(j,c)$ and are stripped later by identity tests on
+$g^{c/p^t}$.
+
+\subsection{Stage 2: discrete logs}
+
+One joint shot now estimates $\chi(g),\chi(A),\chi(B),\chi(C)$
+\emph{with the same $\chi$}. Rounding each estimate to the $(1/n)\Z$
+grid gives $j/n$ and $r_X/n$ with
+\[
+  a\,j \equiv r_A \pmod n
+\]
+(and similarly for $b,c$) --- a linear congruence whose solutions are a
+class $x_0 + tM$, $t<n/M$. Each candidate is verified by the identity
+test $X\cdot g^{-x}\stackrel?=e$; consistent rounds are merged across
+shots by CRT, and large classes are tested wholesale via
+$(Xg^{-x_0})^{n/M}\stackrel?=e$.
+
+\subsection{Stage 3: forgery --- proving a negative}
+
+A forged $X\notin\langle g\rangle$ comes in two grades:
+
+\begin{itemize}[nosep]
+  \item \textbf{Easy:} $X^n\ne e$. One identity test proves it.
+  \item \textbf{Hard:} $X\in G[n]$ (the $n$-torsion) but
+        $X\notin\langle g\rangle$ --- e.g.\ \texttt{public\_2}'s $B$.
+        Every round looks clean, yet every candidate fails verification
+        or the congruence is inconsistent ($r\notin j\Z_n$).
+\end{itemize}
+
+We count \emph{clean rounds that contradict $\langle g\rangle$} and call a
+forgery past a threshold. The subtlety is that \emph{honest} elements
+occasionally produce clean-but-wrong rounds: a noise flip at the step
+with power $2^k$ shifts $\chi\cdot n$ by $n/2^{k+1}$, which goes
+unnoticed precisely when that is near an integer --- worst case
+$n\approx 2^k$. The honest-bad-round rate $p(n)$ is therefore computed
+per-instance from the flip model (matching simulation within $\sim$20\%),
+and the threshold is the smallest $e\ge3$ with $(3p)^e\le10^{-5}$.
+A forgery in a tiny factor like $\Z_2$ stays invisible until
+$\gcd(j,n)$ is coprime to it --- about half the rounds --- which is the
+main residual cost.
+
+\subsection{Graceful degradation}
+
+When the budget or the noise wins, the solver still returns the best
+order found with \texttt{"none"}: the order alone is worth 0.3 points,
+and a forgery is the usual reason the logs cannot finish. If the logs
+stage ever disproves the order ($g^n\ne e$ caught by a strict backstop
+test), the order stage restarts rather than reporting a divisor ---
+a wrong order scores 0.
+
+\section{Open track: the full structure of $\langle g,A,B,C\rangle$}
+
+Each shot's $\chi$ restricted to $H=\langle g,A,B,C\rangle$ is a
+\emph{uniform character of $H$}. One joint phase-estimation shot on the
+four generators reads $\chi(\mathrm{gens})=r/E$ with $r\in\Z_E^4$
+($E$ the exponent of $H$). The vectors $r$ span a subgroup
+$R\le\Z_E^4$ with $R\cong\widehat H\cong H$. Then:
+
+\begin{itemize}[nosep]
+  \item the \emph{relation lattice}
+        $\Lambda=\{x\in\Z^4 : g^{x_0}A^{x_1}B^{x_2}C^{x_3}=e\}$
+        is the scaled dual $E\,(R+E\Z^4)^{-1}$;
+  \item $H\cong\Z^4/\Lambda$, and its Smith normal form gives the
+        invariant factors $H\cong\Z_{n_1}\times\Z_{n_2}\times\cdots$;
+  \item $H/\langle g\rangle\cong\Z^3/\mathrm{proj}(\Lambda)$ is trivial
+        iff nothing is forged, and its size measures how far forgeries
+        sit outside $\langle g\rangle$.
+\end{itemize}
+
+Nothing is taken on trust: every basis relation of $\Lambda$ is
+re-verified on the device with the identity test, and a corrupted shot
+that inflates $R$ is caught by leave-one-out (dropping it shrinks $R$
+while every recovered relation verifies). On \texttt{public\_2} this
+recovers $H\cong\Z_{585585}\times\Z_{37199287125}$ with
+$H/\langle g\rangle\cong\Z_{585585}$ --- the forged $B$ lives one factor
+outside $\langle g\rangle$.
+
+\section{What failed on the way}
+
+\begin{itemize}[nosep]
+  \item \textbf{Worst-case order shot.} Always paying for $n\le2^{60}$
+        made the order shot 93\% of cost on small groups. Found by the
+        cost model; fixed by the probe + lattice.
+  \item \textbf{Smooth $n$ + forgery.} A $\Z_5$ factor forgery with a
+        smooth $n$ cost 60--80k queries every run: $\gcd(j,n)$ was large,
+        so no round ever pinned a candidate class. Found by randomized
+        stress; fixed by testing the whole class at once.
+  \item \textbf{Rare false accepts} ($\sim$1/3000 runs): a wrong log, or
+        an order silently shrunk to a divisor (0 points). Found only by
+        10k-run stress sweeps; fixed with strict tests (18 zeros) where
+        candidates are likely wrong, plus the $g^n\stackrel?=e$
+        backstop that restarts the order stage.
+  \item \textbf{Inherent remaining cost:} very smooth $n$ (median 33k)
+        and forgeries hidden in tiny torsion factors (median 47k) are
+        properties of per-round phase estimation, not fixable bugs.
+\end{itemize}
+
+\section{Results}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+ & v1 & final \\
+\midrule
+official check & 20/20 correct & 20/20 correct \\
+\texttt{public\_1} (honest, $n\sim2^{56}$) & 1.33 & 1.33 \\
+\texttt{public\_2} (forged, $n\sim2^{35}$) & 1.31 & 1.38 \\
+random stress (4{,}500 runs) & 1.39 & 1.41, 0 wrong \\
+qubits per circuit & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Solver degrades gracefully: correct up to $\sim$1.5$\times$ competition
+noise, and when it fails it usually still returns the right order.
+
+\section*{The one-sentence version}
+
+\emph{Each shot draws a random character $\chi$; kickback turns group
+multiplication into phase gates $k\cdot\chi(h)$; a one-qubit semiclassical
+QFT reads those phases bit by bit; and denominators, congruences and
+identity tests turn phases into the order, the logs, and a certified
+verdict on forgery.}
+
+\end{document}
